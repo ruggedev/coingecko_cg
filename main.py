@@ -1,39 +1,64 @@
-import utils
+import json
+import logging
+import os
+import pandas as pd
+from utils import get_days_diff
+from datetime import datetime
+from gecko import Coingecko
+from typing import TypedDict, List
 
 
-class Coingecko:
-    free_url = 'https://api.coingecko.com/api/v3'
-    pro_url = 'https://pro-api.coingecko.com/api/v3'
+class Token(TypedDict):
+    id: str
+    symbol: str
 
-    def __init__(self, gecko_api_key=None):
-        self.key = gecko_api_key
 
-    def get_url(self, endpoint):
-        if self.key:
-            return f'{self.pro_url}/{endpoint}&x_cg_pro_api_key={self.key}'
+START_DATE = '01-01-2019'
+
+
+def get_earlier_date(dstr1, dstr2=START_DATE):
+    a = datetime.strptime(dstr1, '%d-%m-%Y')
+    b = datetime.strptime(dstr2, '%d-%m-%Y')
+
+    return dstr1 if a < b else dstr2
+
+
+def update_tokens():
+    # Load token configs from json
+    with open('tokens_20240115.json', 'r+') as f:
+        tokens: List[Token] = json.load(f)
+    _tokens = tokens.copy()
+    for i in _tokens:
+        file_path = f'data/{i["symbol"]}.csv'
+        if not os.path.exists(file_path):
+            mcap_df = pd.DataFrame(columns=['symbol', 'date', 'mcap_usd'])
         else:
-            return f'{self.free_url}/{endpoint}'
+            mcap_df = pd.read_csv(file_path)
 
-    def get_first_price_exist_date(self, token_id) -> str | None:
-        endpoint = self.get_url(
-            f'coins/{token_id}/market_chart?vs_currency=usd&days=max')
-        data = utils.get(endpoint=endpoint)
-        if 'prices' in data:
-            first_price_date = data['prices'][0][0]
-            if first_price_date != 0:
-                return utils.timestamp_to_datestr(int(first_price_date) / 1000, _format='%d-%m-%Y')
-            else:
-                return None
+        if len(mcap_df) > 0:
+            start_ = mcap_df.iloc[-1]['date']
         else:
-            return None
+            start_ = get_earlier_date('-'.join((str(gecko_.get_first_price_exist_date(i['id'])[1])[0:10].split('-'))
+                                               [::-1]))
 
-    # date_str: DD-MM-YYYY
-    def get_hist_token_price(self, token_id, date_str):
-        endpoint = self.get_url(f'coins/{token_id}/history?date={date_str}')
-        return utils.get(endpoint=endpoint)['market_data']['market_cap']['usd']
+        end_ = datetime.strftime((datetime.today()), '%d-%m-%Y')
+        missing_days = get_days_diff(start_, end_)
+
+        for d in missing_days:
+            mc = gecko_.get_hist_token_price(i['id'], d)
+            new_row = pd.DataFrame([{"symbol": i['symbol'], 'date': d, "mcap_usd": mc}])
+            mcap_df = pd.concat([mcap_df, new_row], ignore_index=True)
+
+            mcap_df = mcap_df[['symbol', 'date', 'mcap_usd']]
+            mcap_df.to_csv(file_path)
+            logging.info(f'Updating: {i["symbol"]}, date: {d}',
+                         extra={'status_code': '', 'tag': '', 'method': ""})
+
+    with open("tokens.json", "w") as outfile:
+        json.dump(_tokens, outfile, indent=4)
 
 
 if __name__ == "__main__":
-    gecko = Coingecko()
-    print(gecko.get_first_price_exist_date('aave'))
-    print(gecko.get_hist_token_price('aave', '2020-10-10'))
+    gecko_ = Coingecko()
+    update_tokens()
+
